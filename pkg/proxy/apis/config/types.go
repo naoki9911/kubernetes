@@ -53,6 +53,9 @@ type KubeProxyIPTablesConfiguration struct {
 	// iptables mode and IPv4; localhost NodePorts are never allowed with other proxy
 	// modes or with IPv6.)
 	LocalhostNodePorts *bool
+
+	// masqueradeSourceAddress is a SNAT source address
+	MasqueradeSourceAddress string
 }
 
 // KubeProxyIPVSConfiguration contains ipvs-related configuration

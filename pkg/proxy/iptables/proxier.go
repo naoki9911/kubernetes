@@ -101,6 +101,7 @@ func NewDualStackProxier(
 	masqueradeAll bool,
 	localhostNodePorts bool,
 	masqueradeBit int,
+	masqueradeSourceAddress string,
 	localDetectors map[v1.IPFamily]proxyutil.LocalTrafficDetector,
 	nodeName string,
 	nodeIPs map[v1.IPFamily]net.IP,
@@ -111,7 +112,7 @@ func NewDualStackProxier(
 ) (proxy.Provider, error) {
 	// Create an ipv4 instance of the single-stack proxier
 	ipv4Proxier, err := NewProxier(ctx, v1.IPv4Protocol, ipts[v1.IPv4Protocol], sysctl,
-		syncPeriod, minSyncPeriod, masqueradeAll, localhostNodePorts, masqueradeBit,
+		syncPeriod, minSyncPeriod, masqueradeAll, localhostNodePorts, masqueradeBit, masqueradeSourceAddress,
 		localDetectors[v1.IPv4Protocol], nodeName, nodeIPs[v1.IPv4Protocol],
 		recorder, healthzServer, nodePortAddresses, initOnly)
 	if err != nil {
@@ -119,7 +120,7 @@ func NewDualStackProxier(
 	}
 
 	ipv6Proxier, err := NewProxier(ctx, v1.IPv6Protocol, ipts[v1.IPv6Protocol], sysctl,
-		syncPeriod, minSyncPeriod, masqueradeAll, false, masqueradeBit,
+		syncPeriod, minSyncPeriod, masqueradeAll, false, masqueradeBit, masqueradeSourceAddress,
 		localDetectors[v1.IPv6Protocol], nodeName, nodeIPs[v1.IPv6Protocol],
 		recorder, healthzServer, nodePortAddresses, initOnly)
 	if err != nil {
@@ -160,14 +161,15 @@ type Proxier struct {
 	lastIPTablesCleanup  time.Time
 
 	// These are effectively const and do not need the mutex to be held.
-	iptables       utiliptables.Interface
-	masqueradeAll  bool
-	masqueradeMark string
-	conntrack      conntrack.Interface
-	nfacct         nfacct.Interface
-	localDetector  proxyutil.LocalTrafficDetector
-	nodeName       string
-	nodeIP         net.IP
+	iptables                utiliptables.Interface
+	masqueradeAll           bool
+	masqueradeMark          string
+	masqueradeSourceAddress string
+	conntrack               conntrack.Interface
+	nfacct                  nfacct.Interface
+	localDetector           proxyutil.LocalTrafficDetector
+	nodeName                string
+	nodeIP                  net.IP
 
 	serviceHealthServer healthcheck.ServiceHealthServer
 	healthzServer       *healthcheck.ProxyHealthServer
@@ -223,6 +225,7 @@ func NewProxier(ctx context.Context,
 	masqueradeAll bool,
 	localhostNodePorts bool,
 	masqueradeBit int,
+	masqueradeSourceAddress string,
 	localDetector proxyutil.LocalTrafficDetector,
 	nodeName string,
 	nodeIP net.IP,
@@ -271,6 +274,10 @@ func NewProxier(ctx context.Context,
 		logger.Error(err, "Failed to create nfacct runner, nfacct based metrics won't be available")
 	}
 
+	if masqueradeSourceAddress != "" {
+		logger.Info("SNAT source address specified", "addr", masqueradeSourceAddress)
+	}
+
 	proxier := &Proxier{
 		ipFamily:                 ipFamily,
 		svcPortMap:               make(proxy.ServicePortMap),
@@ -282,6 +289,7 @@ func NewProxier(ctx context.Context,
 		iptables:                 ipt,
 		masqueradeAll:            masqueradeAll,
 		masqueradeMark:           masqueradeMark,
+		masqueradeSourceAddress:  masqueradeSourceAddress,
 		conntrack:                conntrack.New(),
 		nfacct:                   nfacctRunner,
 		localDetector:            localDetector,
@@ -908,10 +916,20 @@ func (proxier *Proxier) syncProxyRules() {
 		"-A", string(kubePostroutingChain),
 		"-j", "MARK", "--xor-mark", proxier.masqueradeMark,
 	)
-	masqRule := []string{
-		"-A", string(kubePostroutingChain),
-		"-m", "comment", "--comment", `"kubernetes service traffic requiring SNAT"`,
-		"-j", "MASQUERADE",
+	var masqRule = []string{}
+	if proxier.ipFamily == v1.IPv4Protocol && proxier.masqueradeSourceAddress != "" {
+		masqRule = []string{
+			"-A", string(kubePostroutingChain),
+			"-m", "comment", "--comment", `"kubernetes service traffic requiring SNAT"`,
+			"-j", "SNAT",
+			"--to-source", proxier.masqueradeSourceAddress,
+		}
+	} else {
+		masqRule = []string{
+			"-A", string(kubePostroutingChain),
+			"-m", "comment", "--comment", `"kubernetes service traffic requiring SNAT"`,
+			"-j", "MASQUERADE",
+		}
 	}
 	if proxier.iptables.HasRandomFully() {
 		masqRule = append(masqRule, "--random-fully")

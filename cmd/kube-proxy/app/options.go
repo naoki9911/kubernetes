@@ -83,6 +83,10 @@ type Options struct {
 	// hostnameOverride, if set from the command line flag, takes precedence over the `HostnameOverride` value from the config file
 	hostnameOverride string
 
+	// iptables-masquerade-source-address, if set from the command line flag,
+	// takes precedence over the 'IPTablesMasqueradeSourceAddress' value from the config file
+	iptablesMasqueradeSourceAddress string
+
 	logger klog.Logger
 
 	// The fields below here are placeholders for flags that can't be directly mapped into
@@ -133,6 +137,7 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.Int32Var(o.config.IPTables.MasqueradeBit, "iptables-masquerade-bit", ptr.Deref(o.config.IPTables.MasqueradeBit, 14), "If using the iptables or ipvs proxy mode, the bit of the fwmark space to mark packets requiring SNAT with.  Must be within the range [0, 31].")
 	fs.BoolVar(&o.config.Linux.MasqueradeAll, "masquerade-all", o.config.Linux.MasqueradeAll, "SNAT all traffic sent via Service cluster IPs. This may be required with some CNI plugins. Only supported on Linux.")
 	fs.BoolVar(o.config.IPTables.LocalhostNodePorts, "iptables-localhost-nodeports", ptr.Deref(o.config.IPTables.LocalhostNodePorts, true), "If false, kube-proxy will disable the legacy behavior of allowing NodePort services to be accessed via localhost. (Applies only to iptables mode and IPv4; localhost NodePorts are never allowed with other proxy modes or with IPv6.)")
+	fs.StringVar(&o.iptablesMasqueradeSourceAddress, "iptables-masquerade-source-address", o.iptablesMasqueradeSourceAddress, "If specified, outgoing traffics are SNATed with specified source address.")
 	fs.DurationVar(&o.iptablesSyncPeriod, "iptables-sync-period", o.config.SyncPeriod.Duration, "An interval (e.g. '5s', '1m', '2h22m') indicating how frequently various re-synchronizing and cleanup operations are performed. Must be greater than 0.")
 	fs.DurationVar(&o.iptablesMinSyncPeriod, "iptables-min-sync-period", o.config.MinSyncPeriod.Duration, "The minimum period between iptables rule resyncs (e.g. '5s', '1m', '2h22m'). A value of 0 means every Service or EndpointSlice change will result in an immediate iptables resync.")
 
@@ -237,6 +242,10 @@ func (o *Options) Complete(fs *pflag.FlagSet) error {
 		return err
 	}
 
+	if err := o.processIPTablesMasqueradeSourceAddressFlag(); err != nil {
+		return err
+	}
+
 	if err := utilfeature.DefaultMutableFeatureGate.SetFromMap(o.config.FeatureGates); err != nil {
 		return err
 	}
@@ -324,6 +333,20 @@ func (o *Options) processHostnameOverrideFlag() error {
 			return fmt.Errorf("empty hostname-override is invalid")
 		}
 		o.config.HostnameOverride = strings.ToLower(hostName)
+	}
+
+	return nil
+}
+
+// processIPTablesMasqueradeSourceAddressFlag processes iptables-masquerade-source-address flag
+func (o *Options) processIPTablesMasqueradeSourceAddressFlag() error {
+	// Check if iptables-masquerade-source-address flag is set and use value since configFile always overrides
+	if len(o.iptablesMasqueradeSourceAddress) > 0 {
+		addr := strings.TrimSpace(o.iptablesMasqueradeSourceAddress)
+		if len(addr) == 0 {
+			return fmt.Errorf("empty iptables-masquerade-source-address is invalid")
+		}
+		o.config.IPTables.MasqueradeSourceAddress = addr
 	}
 
 	return nil
